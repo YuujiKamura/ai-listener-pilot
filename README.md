@@ -36,15 +36,26 @@ python server.py
 
 ## 統合方法
 
-### photo-ai-lisp に dock をドッキング
+### A. Bookmarklet (推奨 — リポ間結合ゼロ)
 
-`photo-ai-lisp/static/index.html` の `</body>` 直前に 1 行追加:
+ホストの HTML に一切触らず, その都度 dock を注入する方式. sidecar のテストページ `http://localhost:8173/` を開いて, ページ中の「🎧 Install Listener Dock」ボタンをブラウザのブックマークバーにドラッグ&ドロップで保存.
+
+以降は photo-ai-lisp などを開いた状態でブックマークをクリックすると, その瞬間だけ dock が注入される (リロードで消える). ホスト repo への変更不要.
+
+Bookmarklet の中身 (手動で作る場合):
+```js
+javascript:(function(){if(window.__listenerDockInstalled)return;var s=document.createElement('script');s.src='http://localhost:8173/listener-dock.js';document.body.appendChild(s);})();
+```
+
+### B. 恒久的な HTML 改変 (非推奨)
+
+sidecar が常時起動してる前提でいいなら, ホスト HTML の `</body>` 直前に:
 
 ```html
 <script src="http://localhost:8173/listener-dock.js"></script>
 ```
 
-それだけ. photo-ai-lisp をリロードすると右上に 🎧 EAR ドックが出る.
+ただし ホスト repo にこの行を commit すると「sidecar 前提」という結合が永続化する. bookmarklet 方式のほうが repo の独立性を保てる.
 
 ### フロー
 

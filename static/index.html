@@ -28,13 +28,28 @@
 </p>
 
 <div class="box">
-  <h3>統合方法 (photo-ai-lisp など)</h3>
-  <p>ホスト側の HTML (例: <code>photo-ai-lisp/static/index.html</code>) の <code>&lt;/body&gt;</code> 直前に以下 1 行:</p>
+  <h3>統合方法 · bookmarklet (推奨)</h3>
+  <p>
+    ホストのコードに触らず, 必要なときだけ dock を流し込める. 下のボタンをブックマークバーに
+    <strong>ドラッグ&ドロップ</strong> して保存:
+  </p>
+  <p style="margin: 1em 0;">
+    <a id="dock-bookmarklet"
+       href="javascript:(function(){if(window.__listenerDockInstalled)return;var s=document.createElement('script');s.src='http://localhost:8173/listener-dock.js';document.body.appendChild(s);})();"
+       style="display: inline-block; padding: 0.6em 1.2em; background: #7c6fe0; color: #fff; text-decoration: none; border-radius: 4px; font-weight: 700;">
+      🎧 Install Listener Dock
+    </a>
+  </p>
+  <p>
+    photo-ai-lisp などを開いた状態で上記ブックマークをクリックすると, その場で dock が注入される.
+    リロードで消える (永続化しない). ホストの HTML に手を入れないので, リポ間の結合ゼロ.
+  </p>
+
+  <h3 style="margin-top:1.5em;">統合方法 · 恒久的 (非推奨)</h3>
+  <p>毎回入れるのが面倒なら, ホスト HTML の <code>&lt;/body&gt;</code> 直前に:</p>
   <pre>&lt;script src="http://localhost:8173/listener-dock.js"&gt;&lt;/script&gt;</pre>
   <p>
-    dock は fixed position 右上に出る. ホストページに <code>/api/inject?text=...</code>
-    エンドポイントがあれば (photo-ai-lisp 等), STOP 時に自動で
-    <code>@&lt;abs_path&gt; 録音を音楽解析...</code> がターミナルに 2 フェーズ注入される.
+    ただしホスト repo にコミットすると「sidecar 前提」という結合が永続化する. bookmarklet 方式のほうが依存関係が clean.
   </p>
 </div>
 
