@@ -1,0 +1,8 @@
+chunks/
+__pycache__/
+*.pyc
+.env
+.venv/
+venv/
+.DS_Store
+.omc/
