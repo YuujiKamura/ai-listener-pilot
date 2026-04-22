@@ -1,177 +1,144 @@
 # AI Listener Pilot
 
-> ブラウザから OS オーディオをキャプチャ → Gemini CLI が 5 秒チャンクを解析 → ほぼリアルタイムの音楽解析フィードをスクロール表示するパイロット実装。
+> OS オーディオをブラウザでキャプチャ → webm 保存 → host ページの `/api/inject` 経由で Gemini に送り込む小型ドックウィジェット.
 
-## これは何か (One-liner)
+## 何をするか
 
-パソコンで鳴っている音 (YouTube / Spotify / ライブ配信 / DAW のマスター出力など) をブラウザの `getDisplayMedia` でキャプチャし、5 秒ごとに `webm/opus` へ書き出して Flask サーバに送ります。サーバは `gemini --yolo -p "@chunk.webm ..."` をサブプロセスで起動し、キー / BPM / 楽器 / メロディ / 雰囲気を JSON で返し、フロントエンドがフィードに流します。
+1. ホスト側 (例: **[photo-ai-lisp](https://github.com/YuujiKamura/photo-ai-lisp)**) の HTML に 1 行 `<script src="http://localhost:8173/listener-dock.js"></script>` を追加するだけで, 右上に浮く小さい録音ドックが自動インストールされる.
+2. ドック内の **● REC** で `getDisplayMedia` が OS 音声をキャプチャ, **■ STOP** で録音終了.
+3. ドックが webm を sidecar (`http://localhost:8173/save`) にアップロード → 絶対パスが返る.
+4. ドックがホストの `/api/inject?text=@<abs_path> 音楽解析...` を叩く → ホストが PTY に流す → Gemini が解析 → ghostty-web ターミナルに応答がストリーム表示される.
 
-ゴールは「完璧な音楽認識」ではなく、**AI に音を聴かせて感想を連射させる**という体験の実機検証 (pilot) です。
+Gemini TUI は photo-ai-lisp の **本物の ghostty-web WASM ターミナル** で描画される. この pilot は xterm.js を使わない — 独自に並みの品質しか出せないターミナルを載せるより, 既にある高品質な terminal に乗っかる方が賢い (という判断).
 
 ## Prerequisites
 
-- **Python 3.9+**
-  Flask 2.3 以上が動けばバージョンは問いません。
-- **Gemini CLI がインストール済み & 認証済み**
-  事前にターミナルで一度 `gemini` を実行し、OAuth フロー (ブラウザが開く) を完了させておいてください。サーバは `gemini --yolo -p "@chunk.webm ..."` を非対話で呼び出すため、初回認証だけは手動で済ませる必要があります。
-  認証状態は `gemini` を単体で叩いて確認できます。Quota (1 日あたりのリクエスト上限) も同時に確認しておくこと。
-- **Chrome または Edge の最新版**
-  `getDisplayMedia({ video: true, audio: true })` で OS オーディオを取得するため、Chromium 系ブラウザが必要です。Firefox はタブ音声のみ対応しておらずシステム音声は取れないので不可。Safari も同様に不可。
-- **OS**: Windows / macOS / Linux いずれも可。ただし `getDisplayMedia` のオーディオ共有は OS / ブラウザで挙動差があります (後述の Limitations 参照)。
+- **Python 3.9+** (Flask 2.3 + Flask-CORS 4)
+- **[photo-ai-lisp](https://github.com/YuujiKamura/photo-ai-lisp)** などの host page. 必須要件は:
+  - `/api/inject?text=...` エンドポイント (GET で受け取って PTY/端末に流す)
+  - 何らかのターミナル描画 (ghostty-web 推奨) が ↑ の注入結果を表示できる
+  - host page 内で Gemini CLI が走ってる (事前に起動しておく)
+- **Chrome または Edge** (Firefox は system audio 非対応)
+- **Gemini CLI 認証済み** (`gemini` を一度手動起動して OAuth を通しておく)
 
 ## Setup
 
 ```bash
-# 1. リポジトリを clone した後
 cd ai-listener-pilot
-
-# 2. 依存をインストール (venv 推奨)
-python -m venv .venv
-source .venv/bin/activate        # Windows は .venv\Scripts\activate
 pip install -r requirements.txt
 
-# 3. サーバ起動
+# sidecar を起動
 python server.py
+# → http://localhost:8173 で待ち受け
 ```
 
-起動すると `http://localhost:8173` で待ち受けます。
+カスタムポートは `PORT=9000 python server.py`.
 
-## Usage
+## 統合方法
 
-1. ブラウザで `http://localhost:8173` を開く。
-2. **START** ボタンをクリック。
-3. Chrome / Edge の共有ダイアログが出るので、
-   - 「**タブ**」または「**画面全体**」を選択
-   - ダイアログ下部の「**音声も共有する (Share audio / Share tab audio)**」チェックボックスを **必ず ON** にする
-   - 共有を許可する
-4. 音源を再生する (YouTube / Spotify / ローカル音楽プレイヤーなど何でも可)。
-5. 5 秒ごとに音声チャンクがサーバへ POST され、およそ 10〜15 秒のラグで右側のフィードに解析結果が流れてくる。
-6. **STOP** でキャプチャを停止。
+### photo-ai-lisp に dock をドッキング
 
-オーディオメーターが動いていれば音は取れています。START 後もメーターが無反応なら「音声も共有する」のチェックを入れ忘れているので、一度 STOP して共有ダイアログからやり直してください。
+`photo-ai-lisp/static/index.html` の `</body>` 直前に 1 行追加:
+
+```html
+<script src="http://localhost:8173/listener-dock.js"></script>
+```
+
+それだけ. photo-ai-lisp をリロードすると右上に 🎧 EAR ドックが出る.
+
+### フロー
+
+1. photo-ai-lisp のターミナル (ghostty-web iframe) 内で `gemini` を起動しておく
+2. Gemini のプロンプト (`>`) が出たら待機状態
+3. 🎧 ドックの **● REC** をクリック
+4. Chrome 共有ダイアログ:
+   - タブを選択 (or 画面全体) + **「音声も共有」チェック ON**
+5. 音源を再生 (YouTube / Spotify / DAW 何でも) - 数秒〜数十秒
+6. **■ STOP**
+7. ドックが以下を自動実行:
+   - webm を sidecar にアップロード (`POST /save`)
+   - 返ってきた abs path を使って `/api/inject?text=@<path> 録音を音楽解析...` を GET
+   - 400ms gap 後 `/api/inject?text=\n` で Enter (2 フェーズ注入)
+8. Gemini が音声ファイルを解析 → 応答が ghostty-web ターミナルにストリーム表示
+
+### 2 フェーズ注入について
+
+photo-ai-lisp の chat-bar と同じパターン. Gemini CLI は `"text\r"` を「改行挿入」扱いにするバグがあるので, 「本文 → 400ms → LF」と分けて送る必要がある. dock は自動でこれをやる.
 
 ## Architecture
 
 ```
-+------------------+       getDisplayMedia        +-------------------+
-|                  |  (video:true, audio:true)    |                   |
-|  Chrome / Edge   +----------------------------->+  MediaStream      |
-|                  |                              |  (audio track)    |
-+------------------+                              +---------+---------+
-                                                            |
-                                                            | MediaRecorder
-                                                            | (5s chunks,
-                                                            |  audio/webm;codecs=opus)
-                                                            v
-                                                  +---------+---------+
-                                                  |  Blob (webm/opus) |
-                                                  +---------+---------+
-                                                            |
-                                                            | POST /chunk
-                                                            | multipart/form-data
-                                                            v
-+-------------------------------------------------------------------------+
-|  Flask server (server.py) :8173                                         |
-|                                                                         |
-|   1. chunk を chunks/<timestamp>.webm に保存                            |
-|   2. subprocess.run(["gemini", "--yolo", "-p",                          |
-|                      "@chunks/<...>.webm analyze as JSON ..."])         |
-|   3. stdout を JSON として parse                                         |
-|   4. jsonify して返す                                                    |
-+-------------------------------------------------------------------------+
-                                                            |
-                                                            | JSON response
-                                                            v
-+------------------+                              +-------------------+
-|  index.html /    |  fetch('/chunk') の         |  Analysis Feed    |
-|  app.js          |<-----------------------------+  (scrolling div) |
-|                  |  結果を prepend で積む       |                   |
-+------------------+                              +-------------------+
+┌────────────────────────────────────────────────────────────┐
+│ Host page (photo-ai-lisp @ :8090)                          │
+│                                                            │
+│   <iframe id="terminal"> (ghostty-web WASM) ← Gemini 本体   │
+│   + sidebar + chat-bar + …                                 │
+│   +                                                        │
+│   <script src="http://localhost:8173/listener-dock.js">    │
+│        ↓ 自動インストール                                   │
+│   [🎧 EAR dock]                                             │
+│     ● REC / ■ STOP / meter / status                        │
+│        ↓ POST webm → :8173/save (CORS)                     │
+│                          ↓                                 │
+│                     chunks/rec_XXXX.webm 保存              │
+│                     → abs_path を返却                      │
+│        ↓ GET /api/inject?text=@<abs_path> 音楽解析…         │
+│        ↓ 400ms gap                                         │
+│        ↓ GET /api/inject?text=\n  (submit)                 │
+│                          ↓                                 │
+│                     host が PTY に書き込む                  │
+│                          ↓                                 │
+│                     Gemini が @file を読んで解析            │
+│                          ↓                                 │
+│                     ghostty-web iframe に応答描画           │
+└────────────────────────────────────────────────────────────┘
 ```
 
-要点:
+## Sidecar endpoints
 
-- **ブラウザは常にフロントエンド**。推論は全てサーバ側の Gemini CLI に寄せる。
-- **サーバは状態を持たない**。チャンクごとに独立した `gemini` 呼び出しなので、セッション / コンテキストは引き継がない (将来引き継ぐなら Gemini Files API に寄せる)。
-- **フロントエンドの描画は JSON を `<pre>` で整形表示**するだけ。スキーマは Gemini の自由回答に任せている。
+| Method | Path | 用途 |
+|---|---|---|
+| `GET`  | `/`                    | standalone テストページ (dock を読み込むだけ) |
+| `GET`  | `/health`              | `{"ok": true}` 生存確認 |
+| `POST` | `/save`                | `multipart audio` 受信, `chunks/rec_*.webm` 保存 → `{abs_path, size_kb, id}` |
+| `GET`  | `/listener-dock.js`    | dock ウィジェット JS 配信 (host に `<script src=>` で注入) |
 
-## Example Output
+CORS は全オリジン許可 (開発用). 本番運用するなら `flask_cors.CORS(app, origins=['http://localhost:8090'])` 等で絞ること.
 
-Gemini が返す JSON の一例 (プロンプトで明示的にキーを要求しているため、だいたい以下の形に揃います)。
+## Standalone テストモード
 
-```json
-{
-  "timestamp": "2026-04-22T10:15:30Z",
-  "duration_sec": 5,
-  "key": "C# minor",
-  "bpm": 128,
-  "time_signature": "4/4",
-  "instruments": [
-    "four-on-the-floor kick",
-    "sidechained synth bass",
-    "plucked lead synth",
-    "closed hi-hat 16ths",
-    "vocal chop"
-  ],
-  "melody": "rising minor arpeggio (C#4 -> E4 -> G#4), then stepwise descent back to C#4",
-  "mood": "energetic, melancholic, late-night club",
-  "genre_guess": "progressive house / melodic techno",
-  "notes": "sidechain pumping clearly audible at ~480ms interval"
-}
+photo-ai-lisp がなくても, sidecar 単体で動作確認できる:
+
+```bash
+python server.py
+# http://localhost:8173 を開く
 ```
 
-フィードには各チャンクの JSON が時系列で積まれます。不定形フィールド (`notes` など) は Gemini の気分で増減するので、フロントエンドは pretty-print するだけで特定のキーに依存しません。
+→ テストページに dock が出る. REC → STOP で webm が `chunks/` に保存される. このサーバには `/api/inject` が無いので dock は「404」エラーをステータス表示するが, webm 保存ステップは動作確認できる.
 
 ## Limitations
 
-- **Chromium 系のみ (Chrome / Edge)**
-  Firefox は `getDisplayMedia` のオーディオ共有が未対応。Safari も同様。Brave / Opera / Arc などは Chrome 相当なら動くはず (未検証)。
-- **10〜15 秒のラグ**
-  5 秒チャンク + Gemini 推論 (数秒) + ネットワーク / サブプロセス起動オーバーヘッドの合算。リアルタイム (<1 秒) ではない。
-- **ポリフォニック / 歪み系音源は精度低下**
-  ノイジーなロック、デスメタル、トランスのレイヤード音源は楽器特定が怪しくなります。逆にピアノソロ / ボーカル + ギター程度のシンプルな編成は安定して当たります。
-- **Gemini CLI の quota に依存**
-  1 分あたり 12 チャンク (5 秒刻み) × 連続使用で quota を溶かします。長時間回すと途中で `429` 系エラーで停止します。事前に `gemini` で残量を確認すること。
-- **認証はブラウザごとに 1 度必要**
-  `gemini` CLI 側は OAuth (Code Assist) で動いているため、初回の手動実行で認証を済ませておく必要があります。サーバが認証を代行する仕組みはありません。
-- **チャンクファイルが残る**
-  `chunks/` にデバッグ用途で `.webm` を書き出しています。長時間運転すると数百 MB に育ちます。不要なら定期的に削除するか、`server.py` 側で書き出しを無効化してください (`.gitignore` 済み)。
-- **HTTPS ではなく localhost 専用**
-  `getDisplayMedia` は secure context (HTTPS or `localhost`) でしか動きません。LAN 越しに別マシンから叩くなら別途 HTTPS 化が必要です。
+- **Chrome / Edge のみ** — Firefox は system audio 非対応, Safari も同様
+- **Host 依存** — `/api/inject` を持つホストが必須. 無いと dock の後半ステップが失敗
+- **Gemini quota** — 長い録音はそれだけ Gemini の 1 回あたりの処理が重い. 30 秒程度が現実的上限 (実測必要)
+- **polyphonic 精度** — Gemini は general-purpose audio なので, 複数楽器の mix からメロディラインだけを正確に抽出するのは苦手. 単独楽器 or vocal-heavy で best
+- **file:// 不可** — dock スクリプトは CORS で絞られるので `http://localhost:8173` 経由でロードする必要あり
 
-## Why not GitHub Pages?
+## なぜ GitHub Pages で公開しないか
 
-このアプリは **Python プロセス (Flask) と Gemini CLI サブプロセス** が常駐する必要があります。GitHub Pages は静的ホスティング専用なので、サーバサイドで `subprocess.run(["gemini", ...])` を走らせることはできません。
+- `http://localhost:8173` の sidecar + Python subprocess が必要 → static pages で動かない
+- 録音は完全ローカル完結 (webm がサーバ外に出ない) なので, クラウド配信の意味が薄い
+- clone して `python server.py` が一番シンプル
 
-同じ理由で Cloudflare Pages / Vercel Static / Netlify の static プランでも動きません。動かすなら Cloud Run / Fly.io / Railway などの Python ワーカーが走る環境に持っていくか、今回のように **ローカル実行** してください。パイロットとしてはローカルで十分です。
+## 関連プロジェクト
 
-## Project Status
+- **[ai-chiptune-lab](https://github.com/YuujiKamura/ai-chiptune-lab)** — 複数 AI が NES 風チップチューンを競作する sibling プロジェクト. Gemini の耳を借りて評価させてる.
+- **[photo-ai-lisp](https://github.com/YuujiKamura/photo-ai-lisp)** — Common Lisp で書かれた写真処理 UI. ghostty-web iframe + ConPTY + `/api/inject` を持ってるのでこの dock のホストとして最適.
 
-**PILOT / 実験段階**。以下はあえて実装していません:
+## Status
 
-- 認証 (誰でも `localhost:8173` を叩ける)
-- HTTPS / CORS / CSP
-- マルチユーザー (サーバはグローバル共有の 1 プロセス)
-- 永続化 (結果は揮発、リロードで消える)
-- エラーリカバリ (Gemini が落ちたら単に 500 が返る)
-- テスト
-
-production 投入するならここが全部埋まるのが前提です。今は「ブラウザで音取れる → Gemini に流せる → それっぽい解析が返ってくる」を確認するためだけの最小実装です。
-
-## Stack
-
-- **Flask** (Python web server)
-- **Gemini CLI** (推論バックエンド、OAuth で認証)
-- **Web Audio API** (`AudioContext`, `AnalyserNode` でメーター表示)
-- **MediaRecorder API** (`audio/webm;codecs=opus` で 5 秒チャンク)
-- **Fetch API** (`multipart/form-data` で `/chunk` に POST)
-
-## Related Project
-
-姉妹プロジェクト: [ai-chiptune-lab](https://github.com/YuujiKamura/ai-chiptune-lab)
-
-複数の AI バックエンド (Claude / Gemini / Codex) を並列に使って chiptune を作曲させるマルチエージェント作曲実験。こちらは「AI が作る側」、ai-listener-pilot は「AI が聴く側」。対になるパイロットです。
+**PILOT** — 局所実装. 本番運用は想定せず, 「ブラウザからの OS 音声キャプチャ + Gemini への注入」が技術的に可能であることを実機で確認するのが目的.
 
 ## License
 
-MIT
+MIT — `LICENSE` 参照.

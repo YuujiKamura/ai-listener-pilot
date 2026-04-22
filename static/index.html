@@ -2,79 +2,81 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8">
-<title>AI Listener Pilot</title>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
+<title>AI Listener Pilot · standalone test</title>
 <style>
-  :root { --bg:#0a0a0f; --fg:#8ef; --accent:#f44; --dim:#266; --panel:#111; }
-  * { box-sizing: border-box; }
-  body { background: var(--bg); color: var(--fg); font-family: 'Courier New', monospace; padding: 1.5rem; max-width: 1200px; margin: 0 auto; }
-  h1 { color: var(--accent); text-shadow: 3px 3px 0 #400; letter-spacing: 2px; margin-bottom: 0.2em; }
-  h1 small { color: var(--fg); font-size: 0.45em; letter-spacing: 0; }
-  p { color: #6ac; font-size: 0.9em; line-height: 1.5; }
-  code { background: #222; padding: 0.1em 0.4em; border: 1px solid var(--dim); color: #4fd; }
-  button { background: #111; color: var(--fg); border: 2px solid var(--fg); padding: 0.7em 1.3em; font-family: inherit; font-size: 0.95em; cursor: pointer; margin: 0.2em; }
-  button:hover:not(:disabled) { background: var(--fg); color: #000; }
-  button:disabled { opacity: 0.3; cursor: not-allowed; }
-  button.rec { background: #300; color: #f88; border-color: var(--accent); animation: pulse 1s infinite; }
-  @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(255,68,68,0.5); } 50% { box-shadow: 0 0 0 8px rgba(255,68,68,0); } }
-  #status { color: #6ac; margin: 0.8em 0; padding: 0.4em 0.8em; background: #111; border-left: 4px solid var(--accent); font-size: 0.85em; }
-  #meter { height: 12px; background: #000; border: 1px solid var(--dim); margin-top: 0.4em; overflow: hidden; }
-  #meter-bar { height: 100%; background: linear-gradient(90deg, #4fd, #ffcc44, #f44); width: 0%; transition: width 50ms; }
-  #duration { font-size: 1.05em; color: #ffcc44; margin-left: 0.8em; font-variant-numeric: tabular-nums; }
-
-  .layout { display: grid; grid-template-columns: 320px 1fr; gap: 1rem; margin-top: 1rem; }
-  @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
-  .controls { }
-  .term-wrap { background: #000; border: 2px solid var(--dim); display: flex; flex-direction: column; min-height: 500px; }
-  .term-header { background: var(--panel); padding: 0.3em 0.8em; border-bottom: 1px solid var(--dim); color: #666; font-size: 0.8em; display: flex; justify-content: space-between; align-items: center; }
-  .term-header .dots span { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; background: #555; }
-  .term-header .dots .r { background: #f55; }
-  .term-header .dots .y { background: #fc4; }
-  .term-header .dots .g { background: #4c4; }
-  .term-header .stats { font-variant-numeric: tabular-nums; }
-  #terminal { flex: 1; padding: 0.3em; }
-  .meta { color: var(--dim); font-size: 0.78em; margin-top: 1em; line-height: 1.5; }
+  body { background: #1a1a1e; color: #e6e6ea; font-family: -apple-system, 'Segoe UI', sans-serif; padding: 2rem; max-width: 800px; margin: 0 auto; line-height: 1.6; }
+  h1 { color: #7c6fe0; letter-spacing: 2px; }
+  h1 small { color: #e6e6ea; font-size: 0.5em; letter-spacing: 0; }
+  code, pre { background: #22222a; padding: 0.2em 0.4em; border: 1px solid #33333a; color: #73daca; font-size: 0.9em; }
+  pre { padding: 1em; display: block; overflow-x: auto; border-radius: 4px; }
+  p { color: #aaa; }
+  a { color: #7c6fe0; }
+  .box { background: #22222a; border: 1px solid #33333a; border-radius: 6px; padding: 1em 1.2em; margin: 1em 0; }
+  .box h3 { color: #f7768e; margin-bottom: 0.4em; font-size: 0.9em; text-transform: uppercase; letter-spacing: 1px; }
+  .mock-note { color: #ffcc44; font-size: 0.85em; }
 </style>
 </head>
 <body>
 
-<h1>AI LISTENER <br><small>PILOT · EMBEDDED GEMINI TERMINAL</small></h1>
+<h1>AI LISTENER <small>· sidecar standalone</small></h1>
+
 <p>
-  Flask が <code>gemini</code> を ConPTY で常駐, 右のターミナルに直結.
-  音声を録って STOP すると, サーバが PTY stdin に <code>@path</code> 付きプロンプトを書き込む → Gemini が応答 → 同じターミナルに流れる.
+  このページは sidecar の自己テスト用. dock ウィジェットは読み込まれてるけど,
+  <strong><code>/api/inject</code> がこのサーバにはない</strong> ので注入は失敗する
+  (dock はエラーステータスを出す). 録音 → <code>/save</code> → <code>chunks/</code> に
+  webm が保存されるとこまでは動作確認できる.
 </p>
 
-<div class="layout">
-  <div class="controls">
-    <div>
-      <button id="start">● REC</button>
-      <button id="stop" disabled>■ STOP & ANALYZE</button>
-      <span id="duration">00:00</span>
-    </div>
-    <div id="status">idle</div>
-    <div id="meter"><div id="meter-bar"></div></div>
-    <div class="meta">
-      🎧 REC → 共有ダイアログ「タブ」or「画面」+ <b>「音声も共有」</b> → 音楽再生 → STOP<br>
-      ⚠ Chrome / Edge のみ<br>
-      💡 右のターミナルは Gemini 本体. 直接キー入力も効く (スラッシュコマンド等)<br>
-      <br>
-      <button id="btn-esc" title="ESC">ESC</button>
-      <button id="btn-ctrlc" title="Ctrl+C">^C</button>
-      <button id="btn-clear" title="clear">CLEAR</button>
-    </div>
-  </div>
-
-  <div class="term-wrap">
-    <div class="term-header">
-      <div><span class="dots"><span class="r"></span><span class="y"></span><span class="g"></span></span> <span id="term-title">gemini (pty)</span></div>
-      <div class="stats" id="term-stats">—</div>
-    </div>
-    <div id="terminal"></div>
-  </div>
+<div class="box">
+  <h3>統合方法 (photo-ai-lisp など)</h3>
+  <p>ホスト側の HTML (例: <code>photo-ai-lisp/static/index.html</code>) の <code>&lt;/body&gt;</code> 直前に以下 1 行:</p>
+  <pre>&lt;script src="http://localhost:8173/listener-dock.js"&gt;&lt;/script&gt;</pre>
+  <p>
+    dock は fixed position 右上に出る. ホストページに <code>/api/inject?text=...</code>
+    エンドポイントがあれば (photo-ai-lisp 等), STOP 時に自動で
+    <code>@&lt;abs_path&gt; 録音を音楽解析...</code> がターミナルに 2 フェーズ注入される.
+  </p>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
-<script src="app.js"></script>
+<div class="box">
+  <h3>アーキテクチャ</h3>
+<pre>
+┌────────────────────────────────────────────────────────────┐
+│ Host page (photo-ai-lisp @ :8090)                          │
+│                                                            │
+│   &lt;iframe id="terminal"&gt; (ghostty-web WASM)  ← Gemini 本体  │
+│   + sidebar + chat-bar + ... (既存)                        │
+│   +                                                        │
+│   &lt;script src="http://localhost:8173/listener-dock.js"&gt;    │
+│        ↓                                                   │
+│   [🎧 EAR dock]  ← 本スクリプトが追加                       │
+│     REC/STOP/meter                                         │
+│        ↓                                                   │
+│        ↓ POST webm → http://localhost:8173/save (CORS)     │
+│                           ↓                                │
+│                      chunks/rec_XXXX.webm 保存             │
+│                      → abs_path を返却                     │
+│        ↓                                                   │
+│     fetch /api/inject?text=@&lt;abs_path&gt;... (host 同一オリジン)│
+│        ↓ 400ms gap                                         │
+│     fetch /api/inject?text=\n  (2-phase submit)            │
+│        ↓                                                   │
+│     host が PTY に流す → Gemini が解析 → ghostty iframe 表示 │
+└────────────────────────────────────────────────────────────┘
+</pre>
+</div>
+
+<div class="box">
+  <h3>現在このページで試せること</h3>
+  <p class="mock-note">右上の EAR dock で REC → STOP すると:</p>
+  <ol>
+    <li>webm が <code>http://localhost:8173/save</code> に POST され保存</li>
+    <li>dock が <code>/api/inject</code> を叩こうとする</li>
+    <li>このサーバには <code>/api/inject</code> がないので <strong>404 エラー</strong>が出る (正常)</li>
+    <li>実際に流したい場合は photo-ai-lisp に上記 1 行足してそっち開く</li>
+  </ol>
+</div>
+
+<script src="/listener-dock.js"></script>
 </body>
 </html>
