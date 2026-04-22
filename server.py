@@ -119,6 +119,8 @@ def health():
 
 
 if __name__ == '__main__':
-    print('AI Listener Pilot starting on http://localhost:5173', flush=True)
+    import os
+    port = int(os.environ.get('PORT', 8173))
+    print(f'AI Listener Pilot starting on http://localhost:{port}', flush=True)
     print(f'Chunks dir: {CHUNKS}', flush=True)
-    app.run(host='127.0.0.1', port=5173, debug=False, threaded=True)
+    app.run(host='127.0.0.1', port=port, debug=False, threaded=True)
