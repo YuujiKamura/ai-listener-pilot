@@ -1,10 +1,69 @@
+// ============================================================
+// xterm.js + WebSocket to Flask PTY
+// ============================================================
+const term = new Terminal({
+  cols: 120,
+  rows: 30,
+  fontFamily: 'Consolas, "Courier New", monospace',
+  fontSize: 13,
+  theme: {
+    background: '#000',
+    foreground: '#9f9',
+    cursor: '#ffcc44',
+  },
+  cursorBlink: true,
+  convertEol: true,
+});
+const fitAddon = new FitAddon.FitAddon();
+term.loadAddon(fitAddon);
+term.open(document.getElementById('terminal'));
+setTimeout(() => fitAddon.fit(), 100);
+window.addEventListener('resize', () => fitAddon.fit());
+
+const termStats = document.getElementById('term-stats');
+let ws = null;
+let wsBytes = 0;
+
+function connectPtyWs() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(`${proto}//${location.host}/pty`);
+  ws.binaryType = 'arraybuffer';
+  ws.onopen = () => { termStats.textContent = 'connected'; };
+  ws.onclose = () => { termStats.textContent = 'disconnected — reconnecting…'; setTimeout(connectPtyWs, 2000); };
+  ws.onerror = (e) => console.warn('ws error', e);
+  ws.onmessage = (ev) => {
+    const data = ev.data;
+    if (data instanceof ArrayBuffer) {
+      const bytes = new Uint8Array(data);
+      wsBytes += bytes.length;
+      term.write(bytes);
+    } else {
+      wsBytes += data.length;
+      term.write(data);
+    }
+    termStats.textContent = `${wsBytes} bytes recv`;
+  };
+}
+connectPtyWs();
+
+// Browser keystrokes → server → PTY stdin
+term.onData((data) => {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(data);
+});
+
+// Helper buttons
+document.getElementById('btn-esc').onclick = () => ws && ws.send('\x1b');
+document.getElementById('btn-ctrlc').onclick = () => ws && ws.send('\x03');
+document.getElementById('btn-clear').onclick = () => term.clear();
+
+// ============================================================
+// Recording: getDisplayMedia → MediaRecorder → POST /analyze
+// ============================================================
 const startBtn = document.getElementById('start');
 const stopBtn = document.getElementById('stop');
 const statusEl = document.getElementById('status');
 const meterBar = document.getElementById('meter-bar');
 const durationEl = document.getElementById('duration');
-const terminalEl = document.getElementById('terminal');
-const termStatsEl = document.getElementById('term-stats');
 
 let stream = null;
 let recorder = null;
@@ -18,26 +77,20 @@ let recordedChunks = [];
 async function start() {
   statusEl.textContent = '音声共有の許可ダイアログを開きます…';
   try {
-    stream = await navigator.mediaDevices.getDisplayMedia({
-      video: true,
-      audio: true,
-    });
+    stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
   } catch (e) {
     statusEl.textContent = `許可失敗: ${e.message}`;
     return;
   }
-
   const audioTracks = stream.getAudioTracks();
   if (audioTracks.length === 0) {
-    statusEl.textContent = '⚠ 音声トラックなし. 共有ダイアログで「音声も共有」チェックを入れた?';
+    statusEl.textContent = '⚠ 音声トラックなし. 「音声も共有」チェック入れた?';
     stream.getTracks().forEach(t => t.stop());
     return;
   }
-
   stream.getVideoTracks().forEach(t => t.stop());
   const audioOnly = new MediaStream(audioTracks);
 
-  // Meter
   audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   const src = audioCtx.createMediaStreamSource(audioOnly);
   analyser = audioCtx.createAnalyser();
@@ -45,19 +98,17 @@ async function start() {
   src.connect(analyser);
   runMeter();
 
-  // Recorder — no timeslice, so ondataavailable fires once on stop with full blob
   const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
     ? 'audio/webm;codecs=opus'
     : 'audio/webm';
   recorder = new MediaRecorder(audioOnly, { mimeType: mime });
   recordedChunks = [];
-
   recorder.ondataavailable = (e) => {
     if (e.data && e.data.size > 0) recordedChunks.push(e.data);
   };
   recorder.onstop = async () => {
     const blob = new Blob(recordedChunks, { type: mime });
-    await uploadAndStream(blob);
+    await uploadAnalyze(blob);
   };
 
   recorder.start();
@@ -66,9 +117,7 @@ async function start() {
   startBtn.disabled = true;
   startBtn.classList.add('rec');
   stopBtn.disabled = false;
-  statusEl.textContent = '● REC 中. 音を鳴らして. STOP で解析開始.';
-  terminalEl.classList.remove('empty');
-  terminalEl.textContent = '';
+  statusEl.textContent = '● REC 中. 音を鳴らして. STOP で Gemini にプロンプト送信.';
 }
 
 function stop() {
@@ -83,79 +132,24 @@ function stop() {
   startBtn.disabled = false;
   startBtn.classList.remove('rec');
   stopBtn.disabled = true;
-  statusEl.textContent = '⏫ Gemini にアップロード → ストリーミング解析中...';
+  statusEl.textContent = '⏫ アップロード中…';
 }
 
-async function uploadAndStream(blob) {
+async function uploadAnalyze(blob) {
   const sizeKb = (blob.size / 1024).toFixed(1);
-  termStatsEl.textContent = `${sizeKb} KB uploaded · waiting for gemini...`;
-  terminalEl.textContent = '';
-  terminalEl.classList.remove('empty');
-
   const fd = new FormData();
   fd.append('audio', blob, `rec_${Date.now()}.webm`);
-
-  let resp;
   try {
-    resp = await fetch('/analyze', { method: 'POST', body: fd });
+    const resp = await fetch('/analyze', { method: 'POST', body: fd });
+    const json = await resp.json();
+    if (json.ok) {
+      statusEl.textContent = `✓ ${sizeKb} KB → Gemini PTY に投入 (id=${json.id}). ターミナルで応答を確認.`;
+    } else {
+      statusEl.textContent = `⚠ /analyze エラー: ${json.error || JSON.stringify(json)}`;
+    }
   } catch (err) {
-    statusEl.textContent = `upload 失敗: ${err.message}`;
-    appendTerminal(`\n[NETWORK ERROR] ${err.message}\n`, 'err');
-    return;
+    statusEl.textContent = `⚠ アップロード失敗: ${err.message}`;
   }
-
-  if (!resp.ok || !resp.body) {
-    statusEl.textContent = `HTTP ${resp.status}`;
-    appendTerminal(`\n[HTTP ${resp.status}] ${await resp.text()}\n`, 'err');
-    return;
-  }
-
-  const reader = resp.body.getReader();
-  const decoder = new TextDecoder('utf-8');
-  const startTime = Date.now();
-  let totalBytes = 0;
-
-  showCursor();
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    totalBytes += value.length;
-    const text = decoder.decode(value, { stream: true });
-    appendTerminal(text);
-    termStatsEl.textContent = `${sizeKb} KB uploaded · ${totalBytes} B received · ${((Date.now()-startTime)/1000).toFixed(1)}s elapsed`;
-  }
-  const flush = decoder.decode();
-  if (flush) appendTerminal(flush);
-  hideCursor();
-  statusEl.textContent = `解析完了 (${((Date.now()-startTime)/1000).toFixed(1)}s)`;
-}
-
-function appendTerminal(text, cls) {
-  // Strip trailing cursor before appending
-  const cursor = terminalEl.querySelector('.cursor');
-  if (cursor) cursor.remove();
-  if (cls) {
-    const span = document.createElement('span');
-    span.className = cls;
-    span.textContent = text;
-    terminalEl.appendChild(span);
-  } else {
-    terminalEl.appendChild(document.createTextNode(text));
-  }
-  terminalEl.scrollTop = terminalEl.scrollHeight;
-  showCursor();
-}
-
-function showCursor() {
-  if (terminalEl.querySelector('.cursor')) return;
-  const c = document.createElement('span');
-  c.className = 'cursor';
-  terminalEl.appendChild(c);
-}
-
-function hideCursor() {
-  const c = terminalEl.querySelector('.cursor');
-  if (c) c.remove();
 }
 
 function runMeter() {

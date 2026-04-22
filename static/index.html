@@ -3,74 +3,78 @@
 <head>
 <meta charset="utf-8">
 <title>AI Listener Pilot</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
 <style>
-  :root { --bg:#0a0a0f; --fg:#8ef; --accent:#f44; --dim:#266; --panel:#111; --term-bg:#000; --term-fg:#9f9; }
+  :root { --bg:#0a0a0f; --fg:#8ef; --accent:#f44; --dim:#266; --panel:#111; }
   * { box-sizing: border-box; }
-  body { background: var(--bg); color: var(--fg); font-family: 'Courier New', monospace; padding: 2rem; max-width: 1000px; margin: 0 auto; }
+  body { background: var(--bg); color: var(--fg); font-family: 'Courier New', monospace; padding: 1.5rem; max-width: 1200px; margin: 0 auto; }
   h1 { color: var(--accent); text-shadow: 3px 3px 0 #400; letter-spacing: 2px; margin-bottom: 0.2em; }
-  h1 small { color: var(--fg); font-size: 0.5em; letter-spacing: 0; }
-  p { color: #6ac; font-size: 0.9em; line-height: 1.6; }
+  h1 small { color: var(--fg); font-size: 0.45em; letter-spacing: 0; }
+  p { color: #6ac; font-size: 0.9em; line-height: 1.5; }
   code { background: #222; padding: 0.1em 0.4em; border: 1px solid var(--dim); color: #4fd; }
-  button { background: #111; color: var(--fg); border: 2px solid var(--fg); padding: 0.8em 1.5em; font-family: inherit; font-size: 1em; cursor: pointer; margin: 0.3em; }
+  button { background: #111; color: var(--fg); border: 2px solid var(--fg); padding: 0.7em 1.3em; font-family: inherit; font-size: 0.95em; cursor: pointer; margin: 0.2em; }
   button:hover:not(:disabled) { background: var(--fg); color: #000; }
   button:disabled { opacity: 0.3; cursor: not-allowed; }
   button.rec { background: #300; color: #f88; border-color: var(--accent); animation: pulse 1s infinite; }
-  @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(255,68,68,0.5); } 50% { box-shadow: 0 0 0 10px rgba(255,68,68,0); } }
-  #status { color: #6ac; margin: 1em 0; padding: 0.5em; background: #111; border-left: 4px solid var(--accent); font-size: 0.9em; }
-  #meter { height: 14px; background: #000; border: 1px solid var(--dim); margin-top: 0.5em; position: relative; overflow: hidden; }
+  @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(255,68,68,0.5); } 50% { box-shadow: 0 0 0 8px rgba(255,68,68,0); } }
+  #status { color: #6ac; margin: 0.8em 0; padding: 0.4em 0.8em; background: #111; border-left: 4px solid var(--accent); font-size: 0.85em; }
+  #meter { height: 12px; background: #000; border: 1px solid var(--dim); margin-top: 0.4em; overflow: hidden; }
   #meter-bar { height: 100%; background: linear-gradient(90deg, #4fd, #ffcc44, #f44); width: 0%; transition: width 50ms; }
-  #duration { font-size: 1.1em; color: #ffcc44; margin-left: 1em; font-variant-numeric: tabular-nums; }
+  #duration { font-size: 1.05em; color: #ffcc44; margin-left: 0.8em; font-variant-numeric: tabular-nums; }
 
-  /* Terminal-style output area */
-  .term-panel { background: var(--term-bg); border: 2px solid var(--dim); margin-top: 1em; padding: 0; }
-  .term-header { background: var(--panel); padding: 0.3em 0.8em; border-bottom: 1px solid var(--dim); color: #666; font-size: 0.8em; display: flex; justify-content: space-between; }
+  .layout { display: grid; grid-template-columns: 320px 1fr; gap: 1rem; margin-top: 1rem; }
+  @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+  .controls { }
+  .term-wrap { background: #000; border: 2px solid var(--dim); display: flex; flex-direction: column; min-height: 500px; }
+  .term-header { background: var(--panel); padding: 0.3em 0.8em; border-bottom: 1px solid var(--dim); color: #666; font-size: 0.8em; display: flex; justify-content: space-between; align-items: center; }
   .term-header .dots span { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; background: #555; }
   .term-header .dots .r { background: #f55; }
   .term-header .dots .y { background: #fc4; }
   .term-header .dots .g { background: #4c4; }
-  #terminal { color: var(--term-fg); font-family: 'Courier New', Consolas, monospace; font-size: 0.85em; padding: 1em; white-space: pre-wrap; word-break: break-word; max-height: 60vh; overflow-y: auto; min-height: 200px; }
-  #terminal.empty::before { content: '(ready — STOP を押した時点で gemini に全音声送信)'; color: #555; }
-  #terminal .prompt { color: #4fd; }
-  #terminal .divider { color: #444; }
-  #terminal .err { color: #f88; background: #300; }
-  #terminal .cursor { display: inline-block; width: 8px; height: 1em; background: var(--term-fg); animation: blink 1s infinite; vertical-align: text-bottom; }
-  @keyframes blink { 0%, 50% { opacity: 1; } 51%, 100% { opacity: 0; } }
-
-  .meta { color: var(--dim); font-size: 0.8em; margin-top: 1em; line-height: 1.6; }
+  .term-header .stats { font-variant-numeric: tabular-nums; }
+  #terminal { flex: 1; padding: 0.3em; }
+  .meta { color: var(--dim); font-size: 0.78em; margin-top: 1em; line-height: 1.5; }
 </style>
 </head>
 <body>
 
-<h1>AI LISTENER <br><small>PILOT · GEMINI EAR (record → stop → analyze)</small></h1>
+<h1>AI LISTENER <br><small>PILOT · EMBEDDED GEMINI TERMINAL</small></h1>
 <p>
-  OS/ブラウザが鳴らしてる音声を <code>getDisplayMedia</code> で取得し, <b>STOP を押した時点で全部まとめて Gemini CLI に食わせる</b>.
-  Gemini の stdout は下のターミナル風パネルにストリーミング表示される.
+  Flask が <code>gemini</code> を ConPTY で常駐, 右のターミナルに直結.
+  音声を録って STOP すると, サーバが PTY stdin に <code>@path</code> 付きプロンプトを書き込む → Gemini が応答 → 同じターミナルに流れる.
 </p>
 
-<div>
-  <button id="start">● REC</button>
-  <button id="stop" disabled>■ STOP & ANALYZE</button>
-  <span id="duration">00:00</span>
-</div>
-
-<div id="status">idle</div>
-<div id="meter"><div id="meter-bar"></div></div>
-
-<div class="term-panel">
-  <div class="term-header">
-    <div class="dots"><span class="r"></span><span class="y"></span><span class="g"></span></div>
-    <div id="term-title">gemini --yolo -p "..."</div>
-    <div id="term-stats"></div>
+<div class="layout">
+  <div class="controls">
+    <div>
+      <button id="start">● REC</button>
+      <button id="stop" disabled>■ STOP & ANALYZE</button>
+      <span id="duration">00:00</span>
+    </div>
+    <div id="status">idle</div>
+    <div id="meter"><div id="meter-bar"></div></div>
+    <div class="meta">
+      🎧 REC → 共有ダイアログ「タブ」or「画面」+ <b>「音声も共有」</b> → 音楽再生 → STOP<br>
+      ⚠ Chrome / Edge のみ<br>
+      💡 右のターミナルは Gemini 本体. 直接キー入力も効く (スラッシュコマンド等)<br>
+      <br>
+      <button id="btn-esc" title="ESC">ESC</button>
+      <button id="btn-ctrlc" title="Ctrl+C">^C</button>
+      <button id="btn-clear" title="clear">CLEAR</button>
+    </div>
   </div>
-  <div id="terminal" class="empty"></div>
+
+  <div class="term-wrap">
+    <div class="term-header">
+      <div><span class="dots"><span class="r"></span><span class="y"></span><span class="g"></span></span> <span id="term-title">gemini (pty)</span></div>
+      <div class="stats" id="term-stats">—</div>
+    </div>
+    <div id="terminal"></div>
+  </div>
 </div>
 
-<div class="meta">
-  🎧 <b>使い方:</b> REC → 共有ダイアログ「タブを共有」or「画面全体」+ <b>「音声も共有」チェック必須</b> → 音楽再生 → STOP & ANALYZE で Gemini 解析.<br>
-  ⚠ Chrome / Edge のみ. Firefox は system audio 非対応.<br>
-  ⚠ Gemini が応答しない場合は server コンソールを確認 (PATH 解決 / OAuth 状況).
-</div>
-
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
