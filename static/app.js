@@ -1,23 +1,25 @@
 const startBtn = document.getElementById('start');
 const stopBtn = document.getElementById('stop');
 const statusEl = document.getElementById('status');
-const feed = document.getElementById('feed');
 const meterBar = document.getElementById('meter-bar');
+const durationEl = document.getElementById('duration');
+const terminalEl = document.getElementById('terminal');
+const termStatsEl = document.getElementById('term-stats');
 
 let stream = null;
 let recorder = null;
 let audioCtx = null;
 let analyser = null;
 let meterRAF = null;
-let pendingUploads = 0;
-
-const CHUNK_MS = 5000; // 5-second chunks
+let durationTimer = null;
+let recordStartTime = 0;
+let recordedChunks = [];
 
 async function start() {
   statusEl.textContent = '音声共有の許可ダイアログを開きます…';
   try {
     stream = await navigator.mediaDevices.getDisplayMedia({
-      video: true, // Chrome requires video:true, we discard it after
+      video: true,
       audio: true,
     });
   } catch (e) {
@@ -32,12 +34,10 @@ async function start() {
     return;
   }
 
-  // Discard video track — we only want audio
   stream.getVideoTracks().forEach(t => t.stop());
-
   const audioOnly = new MediaStream(audioTracks);
 
-  // Meter (immediate visual feedback that audio is flowing)
+  // Meter
   audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   const src = audioCtx.createMediaStreamSource(audioOnly);
   analyser = audioCtx.createAnalyser();
@@ -45,60 +45,117 @@ async function start() {
   src.connect(analyser);
   runMeter();
 
-  // MediaRecorder → 5秒チャンクを /chunk へ POST
+  // Recorder — no timeslice, so ondataavailable fires once on stop with full blob
   const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
     ? 'audio/webm;codecs=opus'
     : 'audio/webm';
   recorder = new MediaRecorder(audioOnly, { mimeType: mime });
+  recordedChunks = [];
 
-  recorder.ondataavailable = async (e) => {
-    if (!e.data || e.data.size === 0) return;
-    const fd = new FormData();
-    fd.append('audio', e.data, `chunk_${Date.now()}.webm`);
-    pendingUploads++;
-    updateStatus();
-    try {
-      const resp = await fetch('/chunk', { method: 'POST', body: fd });
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const json = await resp.json();
-      appendEntry(json);
-    } catch (err) {
-      appendError(err.message);
-    } finally {
-      pendingUploads--;
-      updateStatus();
-    }
+  recorder.ondataavailable = (e) => {
+    if (e.data && e.data.size > 0) recordedChunks.push(e.data);
+  };
+  recorder.onstop = async () => {
+    const blob = new Blob(recordedChunks, { type: mime });
+    await uploadAndStream(blob);
   };
 
-  recorder.start(CHUNK_MS);
+  recorder.start();
+  recordStartTime = Date.now();
+  startDurationTimer();
   startBtn.disabled = true;
+  startBtn.classList.add('rec');
   stopBtn.disabled = false;
-  updateStatus('🎧 録音中. 5秒毎に Gemini に送信.');
+  statusEl.textContent = '● REC 中. 音を鳴らして. STOP で解析開始.';
+  terminalEl.classList.remove('empty');
+  terminalEl.textContent = '';
 }
 
 function stop() {
-  if (recorder && recorder.state !== 'inactive') recorder.stop();
+  if (!recorder || recorder.state === 'inactive') return;
+  recorder.stop();
   if (stream) stream.getTracks().forEach(t => t.stop());
   if (audioCtx) { audioCtx.close(); audioCtx = null; }
   if (meterRAF) { cancelAnimationFrame(meterRAF); meterRAF = null; }
+  if (durationTimer) { clearInterval(durationTimer); durationTimer = null; }
   meterBar.style.width = '0%';
   stream = null;
-  recorder = null;
   startBtn.disabled = false;
+  startBtn.classList.remove('rec');
   stopBtn.disabled = true;
-  updateStatus('stopped');
+  statusEl.textContent = '⏫ Gemini にアップロード → ストリーミング解析中...';
 }
 
-function updateStatus(override) {
-  if (override) {
-    statusEl.textContent = pendingUploads > 0
-      ? `${override} (解析中 ×${pendingUploads})`
-      : override;
+async function uploadAndStream(blob) {
+  const sizeKb = (blob.size / 1024).toFixed(1);
+  termStatsEl.textContent = `${sizeKb} KB uploaded · waiting for gemini...`;
+  terminalEl.textContent = '';
+  terminalEl.classList.remove('empty');
+
+  const fd = new FormData();
+  fd.append('audio', blob, `rec_${Date.now()}.webm`);
+
+  let resp;
+  try {
+    resp = await fetch('/analyze', { method: 'POST', body: fd });
+  } catch (err) {
+    statusEl.textContent = `upload 失敗: ${err.message}`;
+    appendTerminal(`\n[NETWORK ERROR] ${err.message}\n`, 'err');
     return;
   }
-  statusEl.textContent = pendingUploads > 0
-    ? `🎧 録音中 · Gemini 解析中 (キュー ${pendingUploads})`
-    : '🎧 録音中. 次チャンク待ち…';
+
+  if (!resp.ok || !resp.body) {
+    statusEl.textContent = `HTTP ${resp.status}`;
+    appendTerminal(`\n[HTTP ${resp.status}] ${await resp.text()}\n`, 'err');
+    return;
+  }
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  const startTime = Date.now();
+  let totalBytes = 0;
+
+  showCursor();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    totalBytes += value.length;
+    const text = decoder.decode(value, { stream: true });
+    appendTerminal(text);
+    termStatsEl.textContent = `${sizeKb} KB uploaded · ${totalBytes} B received · ${((Date.now()-startTime)/1000).toFixed(1)}s elapsed`;
+  }
+  const flush = decoder.decode();
+  if (flush) appendTerminal(flush);
+  hideCursor();
+  statusEl.textContent = `解析完了 (${((Date.now()-startTime)/1000).toFixed(1)}s)`;
+}
+
+function appendTerminal(text, cls) {
+  // Strip trailing cursor before appending
+  const cursor = terminalEl.querySelector('.cursor');
+  if (cursor) cursor.remove();
+  if (cls) {
+    const span = document.createElement('span');
+    span.className = cls;
+    span.textContent = text;
+    terminalEl.appendChild(span);
+  } else {
+    terminalEl.appendChild(document.createTextNode(text));
+  }
+  terminalEl.scrollTop = terminalEl.scrollHeight;
+  showCursor();
+}
+
+function showCursor() {
+  if (terminalEl.querySelector('.cursor')) return;
+  const c = document.createElement('span');
+  c.className = 'cursor';
+  terminalEl.appendChild(c);
+}
+
+function hideCursor() {
+  const c = terminalEl.querySelector('.cursor');
+  if (c) c.remove();
 }
 
 function runMeter() {
@@ -117,43 +174,15 @@ function runMeter() {
   loop();
 }
 
-function appendEntry(entry) {
-  const div = document.createElement('div');
-  div.className = 'entry';
-  const ts = new Date(entry.timestamp).toLocaleTimeString('ja-JP');
-  const raw = entry.analysis || '';
-  // Try to pretty-print JSON if Gemini returned valid JSON
-  let body = raw;
-  let bodyClass = '';
-  const jsonMatch = raw.match(/\{[\s\S]*\}/);
-  if (jsonMatch) {
-    try {
-      const parsed = JSON.parse(jsonMatch[0]);
-      body = JSON.stringify(parsed, null, 2);
-      bodyClass = 'json-ok';
-    } catch { /* not valid json, show raw */ }
-  }
-  if (raw.startsWith('(')) bodyClass = 'err';
-  div.innerHTML = `
-    <div class="entry-head">
-      <span class="ts">${escapeHtml(ts)}</span>
-      <span class="id">chunk ${escapeHtml(entry.id)}</span>
-      <span class="size">${entry.size_kb} KB</span>
-    </div>
-    <pre class="${bodyClass}">${escapeHtml(body)}</pre>
-  `;
-  feed.insertBefore(div, feed.firstChild);
-}
-
-function appendError(msg) {
-  const div = document.createElement('div');
-  div.className = 'entry';
-  div.innerHTML = `<div class="entry-head"><span class="ts">${new Date().toLocaleTimeString('ja-JP')}</span></div><pre class="err">upload error: ${escapeHtml(msg)}</pre>`;
-  feed.insertBefore(div, feed.firstChild);
-}
-
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+function startDurationTimer() {
+  const tick = () => {
+    const sec = Math.floor((Date.now() - recordStartTime) / 1000);
+    const mm = String(Math.floor(sec / 60)).padStart(2, '0');
+    const ss = String(sec % 60).padStart(2, '0');
+    durationEl.textContent = `${mm}:${ss}`;
+  };
+  tick();
+  durationTimer = setInterval(tick, 500);
 }
 
 startBtn.onclick = start;
